@@ -1,0 +1,7 @@
+[mcp_servers.kdenlive]
+command = "C:\\Program Files\\nodejs\\node.exe"
+args = ["C:\\path\\to\\kdenlive-mcp\\bin\\kdenlive-mcp.mjs"]
+env = { KDENLIVE_SOURCE_PATH = "C:\\path\\to\\kdenlive" }
+startup_timeout_sec = 10
+tool_timeout_sec = 3600
+default_tools_approval_mode = "writes"
