@@ -181,8 +181,19 @@ function producerXml(clip, producerId, profile) {
     properties.push(property("weight", 400));
     properties.push(property("kdenlive:clip_type", 2));
   } else {
-    properties.push(property("resource", clip.source));
-    properties.push(property("mlt_service", "avformat-novalidate"));
+    const extension = path.extname(clip.source).toLowerCase();
+    const isImage = new Set([".svg", ".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"]).has(extension);
+    const speed = clip.speed ?? 1;
+    if (speed !== 1 && !isImage) {
+      properties.push(property("resource", `${speed}:${clip.source}`));
+      properties.push(property("warp_resource", clip.source));
+      properties.push(property("warp_speed", speed));
+      properties.push(property("mlt_service", "timewarp"));
+    } else {
+      properties.push(property("resource", clip.source));
+      properties.push(property("mlt_service", isImage ? "qimage" : "avformat-novalidate"));
+      if (isImage) properties.push(property("ttl", durationFrames));
+    }
     properties.push(property("kdenlive:clip_type", 0));
   }
   properties.push(property("kdenlive:id", clip.id));
@@ -202,6 +213,73 @@ function producerXml(clip, producerId, profile) {
   ].join("\n");
 }
 
+function effectValue(effect, parameterName, fallback, profile) {
+  const keyframes = (effect.keyframes ?? []).filter((keyframe) => keyframe.values?.[parameterName] !== undefined);
+  if (keyframes.length) {
+    return keyframes.map((keyframe) => `${framesFromSeconds(keyframe.time, profile)}=${keyframe.values[parameterName]}`).join(";");
+  }
+  return effect.parameters?.[parameterName] ?? fallback;
+}
+
+function effectFilterXml(effect, profile, indent = "   ") {
+  const lines = [`${indent}<filter>`];
+  const add = (name, value) => lines.push(property(name, value, `${indent} `));
+  const serviceByType = {
+    brightness: "brightness",
+    contrast: "avfilter.eq",
+    saturation: "avfilter.eq",
+    blur: "avfilter.gblur",
+    vignette: "avfilter.vignette",
+    opacity: "brightness",
+    transform: "qtblend",
+    zoom_pan: "qtblend",
+    chroma_key: "avfilter.chromakey",
+    fade_in: "brightness",
+    fade_out: "brightness",
+    mlt: effect.parameters?.service,
+  };
+  const service = serviceByType[effect.type];
+  if (!service) return "";
+  add("mlt_service", service);
+  add("kdenlive_id", effect.type === "mlt" ? (effect.parameters?.kdenliveId ?? service) : effect.type);
+  add("disable", effect.enabled === false ? 1 : 0);
+  add("kdenlive-mcp:effect", JSON.stringify(effect));
+  switch (effect.type) {
+    case "brightness": add("level", effectValue(effect, "amount", 0, profile)); break;
+    case "contrast": add("av.contrast", effectValue(effect, "amount", 1, profile)); break;
+    case "saturation": add("av.saturation", effectValue(effect, "amount", 1, profile)); break;
+    case "blur": add("av.sigma", effectValue(effect, "sigma", 8, profile)); break;
+    case "vignette": add("av.angle", effectValue(effect, "angle", "PI/5", profile)); break;
+    case "opacity": add("alpha", effectValue(effect, "amount", 1, profile)); break;
+    case "chroma_key":
+      add("av.color", effect.parameters?.color ?? "0x00ff00");
+      add("av.similarity", effectValue(effect, "similarity", 0.2, profile));
+      add("av.blend", effectValue(effect, "blend", 0.1, profile));
+      break;
+    case "transform":
+    case "zoom_pan": {
+      const x = effect.parameters?.x ?? 0;
+      const y = effect.parameters?.y ?? 0;
+      const width = effect.parameters?.width ?? "100%";
+      const height = effect.parameters?.height ?? "100%";
+      add("rect", effectValue(effect, "rect", `${x} ${y} ${width} ${height} 1`, profile));
+      add("rotation", effectValue(effect, "rotation", 0, profile));
+      break;
+    }
+    case "fade_in":
+      add("alpha", `0=0;${framesFromSeconds(effect.parameters?.duration ?? 1, profile)}=1`);
+      break;
+    case "fade_out":
+      add("alpha", `0=1;${framesFromSeconds(effect.parameters?.duration ?? 1, profile)}=0`);
+      break;
+    case "mlt":
+      for (const [name, value] of Object.entries(effect.parameters?.properties ?? {})) add(name, value);
+      break;
+  }
+  lines.push(`${indent}</filter>`);
+  return lines.join("\n");
+}
+
 function playlistXml(track, playlistId, clipToProducer, profile) {
   const lines = [` <playlist id="${playlistId}">`];
   if (track.kind === "audio") lines.push(property("kdenlive:audio_track", 1));
@@ -213,6 +291,10 @@ function playlistXml(track, playlistId, clipToProducer, profile) {
     const durationFrames = Math.max(1, framesFromSeconds(clip.duration, profile));
     lines.push(`  <entry producer="${clipToProducer.get(clip.id)}" in="${inFrame}" out="${inFrame + durationFrames - 1}">`);
     lines.push(property("kdenlive:id", clip.id, "   "));
+    for (const effect of clip.effects ?? []) {
+      const filter = effectFilterXml(effect, profile);
+      if (filter) lines.push(filter);
+    }
     lines.push("  </entry>");
     cursorFrames = startFrames + durationFrames;
   }

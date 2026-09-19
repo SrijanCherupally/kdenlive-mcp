@@ -1,8 +1,10 @@
 import readline from "node:readline";
+import { readFile, stat } from "node:fs/promises";
+import path from "node:path";
 import { TOOL_DEFINITIONS, callTool, resolveDefaultSourcePath } from "./tools.mjs";
 
-const SERVER_INFO = { name: "kdenlive-mcp", version: "0.1.0" };
-const INSTRUCTIONS = "Use read-only inspection tools freely. Project edits are transactional and create backups when replacing files. Prefer project_validate before export, project_verify_kdenlive before render, and preview tools before an expensive final project_render. Ask for approval before final renders or overwriting important deliverables.";
+const SERVER_INFO = { name: "kdenlive-mcp", version: "0.2.0" };
+const INSTRUCTIONS = "All companion editing capabilities are available as MCP tools. Work in a loop: inspect media/project, apply small transactional edits, visualize the timeline/effects or render preview frames, revise, then validate and export. Generated SVG graphics can be created and added in one call. Use named effects when possible and type=mlt for an installed MLT filter that lacks a wrapper. Prefer project_validate before export, project_verify_kdenlive before render, and preview tools before an expensive final project_render. Ask for approval before final renders or overwriting important deliverables.";
 
 function send(message) {
   process.stdout.write(`${JSON.stringify(message)}\n`);
@@ -10,6 +12,30 @@ function send(message) {
 
 function errorResponse(id, code, message, data) {
   return { jsonrpc: "2.0", id, error: { code, message, ...(data === undefined ? {} : { data }) } };
+}
+
+async function mediaContent(result) {
+  const candidates = [result?.outputPath, result?.graphic?.outputPath].filter(Boolean);
+  const mimeByExtension = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+    ".svg": "image/svg+xml",
+  };
+  const content = [];
+  for (const candidate of candidates) {
+    const mimeType = mimeByExtension[path.extname(candidate).toLowerCase()];
+    if (!mimeType) continue;
+    try {
+      const info = await stat(candidate);
+      if (info.size > 5 * 1024 * 1024) continue;
+      content.push({ type: "image", data: (await readFile(candidate)).toString("base64"), mimeType });
+    } catch {
+      // The structured result still reports the path if the preview cannot be embedded.
+    }
+  }
+  return content;
 }
 
 async function handleRequest(request) {
@@ -33,11 +59,12 @@ async function handleRequest(request) {
     if (params?.name === "doctor" && args.sourcePath === undefined) args.sourcePath = resolveDefaultSourcePath();
     try {
       const result = await callTool(params?.name, args);
+      const previews = await mediaContent(result);
       return {
         jsonrpc: "2.0",
         id,
         result: {
-          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+          content: [{ type: "text", text: JSON.stringify(result, null, 2) }, ...previews],
           structuredContent: result,
           isError: false,
         },
@@ -77,4 +104,3 @@ export async function runMcpServer() {
     }
   }
 }
-

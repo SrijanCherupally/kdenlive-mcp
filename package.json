@@ -1,6 +1,6 @@
 {
   "name": "kdenlive-mcp",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Transactional Kdenlive companion CLI and local MCP server",
   "type": "module",
   "private": true,
@@ -15,7 +15,7 @@
     "cli": "node ./bin/kdenlive-cli.mjs",
     "mcp": "node ./bin/kdenlive-mcp.mjs",
     "test": "node --test",
-    "check": "node --check ./src/project.mjs && node --check ./src/exporters.mjs && node --check ./src/toolchain.mjs && node --check ./src/tools.mjs && node --check ./src/cli.mjs && node --check ./src/mcp-server.mjs"
+    "check": "node --check ./src/project.mjs && node --check ./src/exporters.mjs && node --check ./src/graphics.mjs && node --check ./src/visualize.mjs && node --check ./src/toolchain.mjs && node --check ./src/tools.mjs && node --check ./src/cli.mjs && node --check ./src/mcp-server.mjs"
   },
   "license": "MIT"
 }

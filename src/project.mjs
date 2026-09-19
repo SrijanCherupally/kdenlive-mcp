@@ -1,8 +1,22 @@
 import { randomUUID } from "node:crypto";
-import { copyFile, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, readdir, rename, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 export const SCHEMA_VERSION = 1;
+export const EFFECT_TYPES = Object.freeze([
+  "brightness",
+  "contrast",
+  "saturation",
+  "blur",
+  "vignette",
+  "opacity",
+  "transform",
+  "zoom_pan",
+  "chroma_key",
+  "fade_in",
+  "fade_out",
+  "mlt",
+]);
 export const DEFAULT_PROFILE = Object.freeze({
   width: 1920,
   height: 1080,
@@ -84,7 +98,7 @@ export function createProject({ name, width, height, fpsNumerator, fpsDenominato
     tracks: [],
     transitions: [],
     metadata: {
-      generator: "kdenlive-mcp/0.1.0",
+      generator: "kdenlive-mcp/0.2.0",
       targetKdenliveVersion: "26.11.70",
     },
   };
@@ -128,6 +142,7 @@ export function addMediaClip(project, { trackId, source, timelineStart = 0, sour
     sourceIn: assertFiniteNumber(sourceIn, "sourceIn", { min: 0 }),
     duration: assertFiniteNumber(duration, "duration", { min: 0, exclusiveMin: true }),
     volume: assertFiniteNumber(volume, "volume", { min: 0 }),
+    speed: 1,
     effects: [],
   };
   track.clips.push(clip);
@@ -160,6 +175,7 @@ export function addTitleClip(project, {
     sourceIn: 0,
     duration: assertFiniteNumber(duration, "duration", { min: 0, exclusiveMin: true }),
     volume: 1,
+    speed: 1,
     style: { font, fontSize, color, background, x, y },
     effects: [],
   };
@@ -191,7 +207,7 @@ export function splitClip(project, { clipId, at, rightClipId } = {}) {
     id: rightClipId?.trim() || randomUUID(),
     name: `${clip.name} (split)`,
     timelineStart: clip.timelineStart + splitAt,
-    sourceIn: clip.sourceIn + splitAt,
+    sourceIn: clip.sourceIn + splitAt * (clip.speed ?? 1),
     duration: clip.duration - splitAt,
   };
   if (project.tracks.some((candidate) => candidate.clips.some((item) => item.id === right.id))) {
@@ -228,6 +244,158 @@ export function setClipVolume(project, { clipId, volume } = {}) {
   if (clip.type !== "media") throw new ProjectError("Volume applies only to media clips", "INVALID_ARGUMENT");
   clip.volume = assertFiniteNumber(volume, "volume", { min: 0 });
   return clone(clip);
+}
+
+export function setClipSpeed(project, { clipId, speed, ripple = true } = {}) {
+  const found = findClip(project, assertNonEmpty(clipId, "clipId"));
+  if (found.clip.type !== "media") throw new ProjectError("Speed applies only to media clips", "INVALID_ARGUMENT");
+  const nextSpeed = assertFiniteNumber(speed, "speed", { min: 0, exclusiveMin: true });
+  const oldSpeed = found.clip.speed ?? 1;
+  const oldDuration = found.clip.duration;
+  const sourceSpan = oldDuration * oldSpeed;
+  const nextDuration = sourceSpan / nextSpeed;
+  const delta = nextDuration - oldDuration;
+  found.clip.speed = nextSpeed;
+  found.clip.duration = nextDuration;
+  if (ripple && Math.abs(delta) > 1e-9) {
+    for (const clip of found.track.clips) {
+      if (clip.id !== found.clip.id && clip.timelineStart >= found.clip.timelineStart + oldDuration - 1e-9) {
+        clip.timelineStart += delta;
+      }
+    }
+  }
+  try {
+    validateProject(project, { throwOnError: true });
+  } catch (error) {
+    found.clip.speed = oldSpeed;
+    found.clip.duration = oldDuration;
+    if (ripple && Math.abs(delta) > 1e-9) {
+      for (const clip of found.track.clips) {
+        if (clip.id !== found.clip.id && clip.timelineStart >= found.clip.timelineStart + nextDuration - 1e-9) {
+          clip.timelineStart -= delta;
+        }
+      }
+    }
+    throw error;
+  }
+  return clone(found.clip);
+}
+
+function normalizeKeyframes(keyframes = []) {
+  if (!Array.isArray(keyframes)) throw new ProjectError("keyframes must be an array", "INVALID_ARGUMENT");
+  return keyframes.map((keyframe, index) => {
+    if (!keyframe || typeof keyframe !== "object") throw new ProjectError(`keyframes[${index}] must be an object`, "INVALID_ARGUMENT");
+    const time = assertFiniteNumber(keyframe.time, `keyframes[${index}].time`, { min: 0 });
+    if (!keyframe.values || typeof keyframe.values !== "object" || Array.isArray(keyframe.values)) {
+      throw new ProjectError(`keyframes[${index}].values must be an object`, "INVALID_ARGUMENT");
+    }
+    return { time, values: clone(keyframe.values), easing: keyframe.easing ?? "linear" };
+  }).sort((a, b) => a.time - b.time);
+}
+
+export function addClipEffect(project, { clipId, type, parameters = {}, keyframes = [], enabled = true, id } = {}) {
+  const { clip } = findClip(project, assertNonEmpty(clipId, "clipId"));
+  if (!EFFECT_TYPES.includes(type)) {
+    throw new ProjectError(`Unsupported effect type: ${type}. Supported: ${EFFECT_TYPES.join(", ")}`, "INVALID_ARGUMENT");
+  }
+  if (type === "mlt" && (typeof parameters.service !== "string" || parameters.service.trim() === "")) {
+    throw new ProjectError("Raw MLT effects require parameters.service", "INVALID_ARGUMENT");
+  }
+  const effect = {
+    id: id?.trim() || randomUUID(),
+    type,
+    enabled: enabled !== false,
+    parameters: clone(parameters),
+    keyframes: normalizeKeyframes(keyframes),
+  };
+  if (clip.effects.some((candidate) => candidate.id === effect.id)) {
+    throw new ProjectError(`Effect already exists: ${effect.id}`, "CONFLICT");
+  }
+  for (const keyframe of effect.keyframes) {
+    if (keyframe.time > clip.duration + 1e-9) throw new ProjectError(`Effect keyframe exceeds clip duration: ${keyframe.time}`, "INVALID_ARGUMENT");
+  }
+  clip.effects.push(effect);
+  return clone(effect);
+}
+
+export function updateClipEffect(project, { clipId, effectId, parameters, keyframes, enabled } = {}) {
+  const { clip } = findClip(project, assertNonEmpty(clipId, "clipId"));
+  const effect = clip.effects.find((candidate) => candidate.id === assertNonEmpty(effectId, "effectId"));
+  if (!effect) throw new ProjectError(`Effect not found: ${effectId}`, "NOT_FOUND");
+  if (parameters !== undefined) effect.parameters = { ...effect.parameters, ...clone(parameters) };
+  if (keyframes !== undefined) effect.keyframes = normalizeKeyframes(keyframes);
+  if (enabled !== undefined) effect.enabled = Boolean(enabled);
+  for (const keyframe of effect.keyframes) {
+    if (keyframe.time > clip.duration + 1e-9) throw new ProjectError(`Effect keyframe exceeds clip duration: ${keyframe.time}`, "INVALID_ARGUMENT");
+  }
+  return clone(effect);
+}
+
+export function removeClipEffect(project, { clipId, effectId } = {}) {
+  const { clip } = findClip(project, assertNonEmpty(clipId, "clipId"));
+  const index = clip.effects.findIndex((candidate) => candidate.id === assertNonEmpty(effectId, "effectId"));
+  if (index < 0) throw new ProjectError(`Effect not found: ${effectId}`, "NOT_FOUND");
+  return clone(clip.effects.splice(index, 1)[0]);
+}
+
+export function removeClip(project, { clipId } = {}) {
+  const found = findClip(project, assertNonEmpty(clipId, "clipId"));
+  const [removed] = found.track.clips.splice(found.index, 1);
+  project.transitions = project.transitions.filter(
+    (transition) => transition.fromClipId !== removed.id && transition.toClipId !== removed.id,
+  );
+  return clone(removed);
+}
+
+export function duplicateClip(project, { clipId, trackId, timelineStart, id } = {}) {
+  const found = findClip(project, assertNonEmpty(clipId, "clipId"));
+  const targetTrack = trackId ? getTrack(project, trackId) : found.track;
+  const duplicate = clone(found.clip);
+  duplicate.id = id?.trim() || randomUUID();
+  duplicate.name = `${duplicate.name} (copy)`;
+  duplicate.timelineStart = timelineStart === undefined
+    ? found.clip.timelineStart + found.clip.duration
+    : assertFiniteNumber(timelineStart, "timelineStart", { min: 0 });
+  targetTrack.clips.push(duplicate);
+  validateProject(project, { throwOnError: true });
+  return clone(duplicate);
+}
+
+export function removeTrack(project, { trackId, deleteClips = false } = {}) {
+  const track = getTrack(project, assertNonEmpty(trackId, "trackId"));
+  if (track.clips.length && !deleteClips) {
+    throw new ProjectError("Track is not empty; set deleteClips=true to remove it", "CONFLICT");
+  }
+  const clipIds = new Set(track.clips.map((clip) => clip.id));
+  project.transitions = project.transitions.filter(
+    (transition) => !clipIds.has(transition.fromClipId) && !clipIds.has(transition.toClipId),
+  );
+  project.tracks.splice(project.tracks.indexOf(track), 1);
+  return clone(track);
+}
+
+export function addCaptions(project, { trackId, cues = [], style = {} } = {}) {
+  if (!Array.isArray(cues) || cues.length === 0) throw new ProjectError("cues must be a non-empty array", "INVALID_ARGUMENT");
+  const added = [];
+  for (const [index, cue] of cues.entries()) {
+    const start = assertFiniteNumber(cue.start, `cues[${index}].start`, { min: 0 });
+    const end = assertFiniteNumber(cue.end, `cues[${index}].end`, { min: 0, exclusiveMin: true });
+    if (end <= start) throw new ProjectError(`cues[${index}].end must be greater than start`, "INVALID_ARGUMENT");
+    added.push(addTitleClip(project, {
+      trackId,
+      text: assertNonEmpty(cue.text, `cues[${index}].text`),
+      timelineStart: start,
+      duration: end - start,
+      name: `Caption ${index + 1}`,
+      font: style.font ?? "Sans",
+      fontSize: style.fontSize ?? 54,
+      color: style.color ?? "#ffffff",
+      background: style.background ?? "#000000aa",
+      x: style.x ?? "center",
+      y: style.y ?? "bottom",
+    }));
+  }
+  return added;
 }
 
 export function addTransition(project, { fromClipId, toClipId, type = "dissolve", duration = 1, id } = {}) {
@@ -278,6 +446,8 @@ export function inspectProject(project) {
       duration: clip.duration,
       source: clip.source,
       volume: clip.volume,
+      speed: clip.speed ?? 1,
+      effects: clone(clip.effects ?? []),
     })),
   }));
   return {
@@ -323,9 +493,20 @@ export function validateProject(project, { throwOnError = false } = {}) {
       if (!Number.isFinite(clip.timelineStart) || clip.timelineStart < 0) errors.push(`Invalid timelineStart for ${clip.id}`);
       if (!Number.isFinite(clip.sourceIn) || clip.sourceIn < 0) errors.push(`Invalid sourceIn for ${clip.id}`);
       if (!Number.isFinite(clip.duration) || clip.duration <= 0) errors.push(`Invalid duration for ${clip.id}`);
+      if (!Number.isFinite(clip.speed ?? 1) || (clip.speed ?? 1) <= 0) errors.push(`Invalid speed for ${clip.id}`);
       if (clip.type === "media" && !clip.source) errors.push(`Missing source for ${clip.id}`);
       if (clip.type === "title" && track.kind !== "video") errors.push(`Title ${clip.id} is not on a video track`);
       if (clip.timelineStart < previousEnd - 1e-9) errors.push(`Clips overlap on track ${track.id} at ${clip.id}`);
+      if (!Array.isArray(clip.effects)) errors.push(`effects must be an array for ${clip.id}`);
+      for (const effect of clip.effects ?? []) {
+        if (!effect.id || !EFFECT_TYPES.includes(effect.type)) errors.push(`Invalid effect on ${clip.id}: ${effect.id ?? "<missing>"}`);
+        if (!Array.isArray(effect.keyframes)) errors.push(`keyframes must be an array for effect ${effect.id}`);
+        for (const keyframe of effect.keyframes ?? []) {
+          if (!Number.isFinite(keyframe.time) || keyframe.time < 0 || keyframe.time > clip.duration + 1e-9) {
+            errors.push(`Invalid keyframe time for effect ${effect.id}`);
+          }
+        }
+      }
       previousEnd = Math.max(previousEnd, clip.timelineStart + clip.duration);
     }
   }
@@ -405,6 +586,36 @@ export async function saveProject(filePath, project, { expectedRevision, createB
   await rename(tempPath, absolutePath);
   Object.assign(project, next);
   return { projectPath: absolutePath, backupPath, revision: next.revision };
+}
+
+export async function listProjectBackups(projectPath) {
+  const absolutePath = path.resolve(assertNonEmpty(projectPath, "projectPath"));
+  const directory = path.join(path.dirname(absolutePath), ".kdenlive-mcp-backups");
+  try {
+    const entries = await readdir(directory, { withFileTypes: true });
+    const prefix = `${path.basename(absolutePath)}.`;
+    return entries
+      .filter((entry) => entry.isFile() && entry.name.startsWith(prefix) && entry.name.endsWith(".bak"))
+      .map((entry) => path.join(directory, entry.name))
+      .sort()
+      .reverse();
+  } catch (error) {
+    if (error.code === "ENOENT") return [];
+    throw error;
+  }
+}
+
+export async function restoreProjectBackup(projectPath, backupPath) {
+  const backups = await listProjectBackups(projectPath);
+  const selected = backupPath ? path.resolve(backupPath) : backups[0];
+  if (!selected) throw new ProjectError("No project backup is available", "NOT_FOUND");
+  if (!backups.includes(selected)) throw new ProjectError("backupPath is not a backup for this project", "INVALID_ARGUMENT");
+  const restored = JSON.parse(await readFile(selected, "utf8"));
+  validateProject(restored, { throwOnError: true });
+  const current = await loadProject(projectPath);
+  restored.revision = current.revision;
+  const saved = await saveProject(projectPath, restored, { expectedRevision: current.revision, createBackup: true });
+  return { restoredFrom: selected, saved, project: inspectProject(restored) };
 }
 
 export async function fileExists(filePath) {

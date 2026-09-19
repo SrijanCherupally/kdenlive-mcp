@@ -4,21 +4,29 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import {
+  addCaptions,
+  addClipEffect,
   addMediaClip,
   addTitleClip,
   addTrack,
   addTransition,
   createProject,
   inspectProject,
+  listProjectBackups,
   loadProject,
   moveClip,
+  removeClipEffect,
+  restoreProjectBackup,
   saveProject,
   setClipVolume,
+  setClipSpeed,
   splitClip,
   trimClip,
   validateProject,
 } from "../src/project.mjs";
 import { exportKdenlive, exportOtio, toKdenliveXml, toOtio } from "../src/exporters.mjs";
+import { createGraphic, listGraphicTemplates } from "../src/graphics.mjs";
+import { visualizeEffects, visualizeTimeline } from "../src/visualize.mjs";
 
 function sampleProject() {
   const project = createProject({ name: "Demo", fpsNumerator: 25 });
@@ -94,6 +102,11 @@ test("save is revisioned, reloadable, and backs up replacements", async () => {
   const loaded = await loadProject(projectPath);
   assert.equal(loaded.name, "Changed");
   assert.equal(loaded.revision, 2);
+  const backups = await listProjectBackups(projectPath);
+  assert.equal(backups.length, 1);
+  const restored = await restoreProjectBackup(projectPath);
+  assert.equal(restored.project.name, "Demo");
+  assert.equal((await loadProject(projectPath)).revision, 3);
   await assert.rejects(() => saveProject(projectPath, project, { expectedRevision: 1 }), /Revision conflict/);
 });
 
@@ -129,3 +142,67 @@ test("file exporters write parseable artifacts", async () => {
   assert.match(await readFile(kdenlivePath, "utf8"), /<mlt /);
 });
 
+test("speed changes ripple later clips and effects carry keyframes", () => {
+  const project = createProject({ name: "Effects" });
+  addTrack(project, { id: "v1", kind: "video" });
+  addMediaClip(project, { id: "c1", trackId: "v1", source: "one.mp4", duration: 10 });
+  addMediaClip(project, { id: "c2", trackId: "v1", source: "two.mp4", timelineStart: 10, duration: 4 });
+  setClipSpeed(project, { clipId: "c1", speed: 2, ripple: true });
+  assert.equal(project.tracks[0].clips[0].duration, 5);
+  assert.equal(project.tracks[0].clips[1].timelineStart, 5);
+  const effect = addClipEffect(project, {
+    clipId: "c1",
+    id: "fx1",
+    type: "brightness",
+    parameters: { amount: 0.1 },
+    keyframes: [{ time: 0, values: { amount: 0 } }, { time: 5, values: { amount: 0.2 } }],
+  });
+  assert.equal(effect.keyframes.length, 2);
+  const xml = toKdenliveXml(project);
+  assert.match(xml, /mlt_service">timewarp/);
+  assert.match(xml, /mlt_service">brightness/);
+  assert.match(xml, /level">0=0;150=0\.2/);
+  removeClipEffect(project, { clipId: "c1", effectId: "fx1" });
+  assert.equal(project.tracks[0].clips[0].effects.length, 0);
+  addClipEffect(project, {
+    clipId: "c1",
+    id: "raw-fx",
+    type: "mlt",
+    parameters: { service: "avfilter.unsharp", properties: { "av.luma_amount": 0.8 } },
+  });
+  assert.match(toKdenliveXml(project), /avfilter\.unsharp/);
+});
+
+test("caption batches create timed title clips", () => {
+  const project = createProject();
+  addTrack(project, { id: "captions", kind: "video" });
+  const captions = addCaptions(project, {
+    trackId: "captions",
+    cues: [
+      { start: 0, end: 1.5, text: "First" },
+      { start: 1.5, end: 3, text: "Second" },
+    ],
+    style: { fontSize: 48 },
+  });
+  assert.equal(captions.length, 2);
+  assert.equal(captions[0].style.y, "bottom");
+  assert.equal(validateProject(project).valid, true);
+});
+
+test("graphic templates and visual maps generate valid SVG artifacts", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "kdenlive-mcp-graphics-"));
+  const graphicPath = path.join(directory, "lower-third.svg");
+  const timelinePath = path.join(directory, "timeline.svg");
+  const effectsPath = path.join(directory, "effects.svg");
+  assert.ok(listGraphicTemplates().some((entry) => entry.template === "lower_third"));
+  await createGraphic({ template: "lower_third", outputPath: graphicPath, title: "Ada & Co.", subtitle: "Editor" });
+  const graphic = await readFile(graphicPath, "utf8");
+  assert.match(graphic, /Ada &amp; Co\./);
+
+  const project = sampleProject();
+  addClipEffect(project, { clipId: "clip-a", id: "fx1", type: "blur", parameters: { sigma: 6 } });
+  await visualizeTimeline({ project, outputPath: timelinePath });
+  await visualizeEffects({ project, clipId: "clip-a", outputPath: effectsPath });
+  assert.match(await readFile(timelinePath, "utf8"), /Smoke|Demo/);
+  assert.match(await readFile(effectsPath, "utf8"), /blur/);
+});

@@ -4,19 +4,43 @@ This is a dependency-free Node.js companion for Kdenlive. One transactional edit
 
 It targets Kdenlive 26.11.70 and newer (MLT 7.38 minimum) without modifying the upstream Kdenlive checkout.
 
-## What works in this foundation
+## What works
 
 - Create a revisioned edit project with video and audio tracks.
 - Add, trim, split, move, and arrange media clips by seconds.
 - Add styled title clips, set clip volume, and declare dissolves/wipes.
+- Change clip speed with ripple editing, duplicate/remove clips, and remove tracks safely.
+- Add, update, inspect, and remove effects with keyframes.
+- Use named color/blur/transform/chroma/fade effects or the raw MLT escape hatch for any installed Kdenlive/MLT filter.
+- Add timed caption batches for short-form and talking-head edits.
+- Generate transparent lower thirds, title cards, badges, callouts, progress bars, and subscribe graphics as SVG.
+- Generate-and-import a graphic into the timeline in one MCP call.
 - Reject invalid timing, duplicate IDs, broken transitions, and same-track overlap.
-- Save atomically, keep timestamped backups, and reject stale revision writes.
+- Save atomically, keep timestamped backups, expose history/undo, and reject stale revision writes.
 - Export OpenTimelineIO (`.otio`) and an MLT-based Kdenlive project (`.kdenlive`).
-- Inspect media and create frames, waveforms, and contact sheets when FFmpeg is available.
+- Inspect media and create frames, waveforms, contact sheets, and real before/after effect comparisons when FFmpeg is available.
+- Produce SVG timeline and effect/keyframe maps that are returned inline to MCP clients, giving the agent visual feedback even before rendering.
 - Verify and render exported projects through Kdenlive's own headless options when Kdenlive is installed.
-- Expose the same operations as 20 MCP tools with read/write/expensive-operation hints.
+- Expose every companion-engine operation as one of 37 MCP tools with read/write/expensive-operation hints. The CLI and MCP server use the same registry and handlers, so they cannot drift.
 
 This is the companion-app phase, not a live bridge into an already-running Kdenlive window. Transitions are carried faithfully in the companion JSON and OTIO export. The direct `.kdenlive` exporter stores their declarations as project metadata, but does not yet construct Kdenlive's internal timeline-mix objects; import the OTIO file when transition fidelity is required.
+
+For practical edit recipes, see [Polished workflows](docs/POLISHED_WORKFLOWS.md).
+
+## MCP feature coverage
+
+| Area | MCP tools |
+| --- | --- |
+| Project safety | `project_create`, `project_inspect`, `project_validate`, `project_history`, `project_undo` |
+| Timeline | `track_add`, `track_remove`, `clip_add`, `clip_trim`, `clip_split`, `clip_move`, `clip_duplicate`, `clip_remove` |
+| Finishing | `clip_set_volume`, `clip_set_speed`, `transition_add`, `captions_add` |
+| Effects | `clip_effect_list`, `clip_effect_add`, `clip_effect_update`, `clip_effect_remove` |
+| Graphics | `graphic_templates`, `graphic_create`, `graphic_create_and_add`, `title_add` |
+| Agent vision | `visualize_timeline`, `visualize_effects`, `preview_frame`, `preview_contact_sheet`, `preview_waveform`, `preview_effect_comparison` |
+| Interchange/output | `project_export_otio`, `project_export_kdenlive`, `project_verify_kdenlive`, `project_render` |
+| Discovery | `doctor`, `media_inspect` |
+
+Generated `.svg`, `.png`, `.jpg`, and `.webp` results up to 5 MB are embedded directly in MCP tool responses, so a compatible client can inspect them without a second file-read tool.
 
 ## Requirements
 
@@ -104,7 +128,7 @@ npm test
 npm run check
 ```
 
-The tests cover editing invariants, backups and optimistic locking, OTIO/MLT export, XML escaping, MCP initialization, tool discovery, and MCP error results.
+The tests cover editing invariants, backups and optimistic locking, OTIO/MLT export, effects/keyframes, speed/ripple editing, captions, generated graphics, timeline/effect visualization, inline MCP images, XML escaping, MCP initialization, tool discovery, and MCP error results.
 
 ## Project format
 

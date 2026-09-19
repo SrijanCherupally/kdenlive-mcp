@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { mkdtemp } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -41,9 +43,27 @@ test("MCP server initializes and lists editing tools", async (context) => {
   child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} })}\n`);
   const listed = await nextResponse();
   const names = listed.result.tools.map((tool) => tool.name);
+  assert.equal(names.length, 37);
+  assert.equal(new Set(names).size, names.length);
   assert.ok(names.includes("project_create"));
   assert.ok(names.includes("project_render"));
+  assert.ok(names.includes("graphic_create_and_add"));
+  assert.ok(names.includes("visualize_effects"));
   assert.equal(listed.result.tools.find((tool) => tool.name === "project_inspect").annotations.readOnlyHint, true);
+});
+
+test("MCP embeds generated graphics as image content", async (context) => {
+  const child = startServer();
+  context.after(() => child.kill());
+  const nextResponse = responseReader(child.stdout);
+  const directory = await mkdtemp(path.join(os.tmpdir(), "kdenlive-mcp-image-"));
+  const outputPath = path.join(directory, "badge.svg");
+  child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "graphic_create", arguments: { template: "badge", outputPath, title: "NEW" } } })}\n`);
+  const response = await nextResponse();
+  assert.equal(response.result.isError, false);
+  assert.equal(response.result.content[1].type, "image");
+  assert.equal(response.result.content[1].mimeType, "image/svg+xml");
+  assert.ok(response.result.content[1].data.length > 100);
 });
 
 test("MCP tool errors are returned as tool results", async (context) => {
@@ -55,4 +75,3 @@ test("MCP tool errors are returned as tool results", async (context) => {
   assert.equal(response.result.isError, true);
   assert.match(response.result.content[0].text, /Unable to read project/);
 });
-
