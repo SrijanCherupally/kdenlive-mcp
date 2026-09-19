@@ -43,10 +43,11 @@ test("MCP server initializes and lists editing tools", async (context) => {
   child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} })}\n`);
   const listed = await nextResponse();
   const names = listed.result.tools.map((tool) => tool.name);
-  assert.equal(names.length, 37);
+  assert.equal(names.length, 38);
   assert.equal(new Set(names).size, names.length);
   assert.ok(names.includes("project_create"));
   assert.ok(names.includes("project_render"));
+  assert.ok(names.includes("project_open_kdenlive"));
   assert.ok(names.includes("graphic_create_and_add"));
   assert.ok(names.includes("visualize_effects"));
   assert.equal(listed.result.tools.find((tool) => tool.name === "project_inspect").annotations.readOnlyHint, true);

@@ -2,7 +2,7 @@
 
 This is a dependency-free Node.js companion for Kdenlive. One transactional editing engine is exposed through both a scriptable CLI and a local STDIO MCP server.
 
-It targets Kdenlive 26.11.70 and newer (MLT 7.38 minimum) without modifying the upstream Kdenlive checkout.
+It supports the stable Kdenlive 26.08 line and newer (MLT 7.38 minimum) without modifying the upstream Kdenlive checkout.
 
 ## What works
 
@@ -20,8 +20,8 @@ It targets Kdenlive 26.11.70 and newer (MLT 7.38 minimum) without modifying the 
 - Export OpenTimelineIO (`.otio`) and an MLT-based Kdenlive project (`.kdenlive`).
 - Inspect media and create frames, waveforms, contact sheets, and real before/after effect comparisons when FFmpeg is available.
 - Produce SVG timeline and effect/keyframe maps that are returned inline to MCP clients, giving the agent visual feedback even before rendering.
-- Verify and render exported projects through Kdenlive's own headless options when Kdenlive is installed.
-- Expose every companion-engine operation as one of 37 MCP tools with read/write/expensive-operation hints. The CLI and MCP server use the same registry and handlers, so they cannot drift.
+- Verify exported projects through MLT, open them in the Kdenlive desktop app, and render through Kdenlive when the toolchain is installed.
+- Expose every companion-engine operation as one of 38 MCP tools with read/write/expensive-operation hints. The CLI and MCP server use the same registry and handlers, so they cannot drift.
 
 This is the companion-app phase, not a live bridge into an already-running Kdenlive window. Transitions are carried faithfully in the companion JSON and OTIO export. The direct `.kdenlive` exporter stores their declarations as project metadata, but does not yet construct Kdenlive's internal timeline-mix objects; import the OTIO file when transition fidelity is required.
 
@@ -37,7 +37,7 @@ For practical edit recipes, see [Polished workflows](docs/POLISHED_WORKFLOWS.md)
 | Effects | `clip_effect_list`, `clip_effect_add`, `clip_effect_update`, `clip_effect_remove` |
 | Graphics | `graphic_templates`, `graphic_create`, `graphic_create_and_add`, `title_add` |
 | Agent vision | `visualize_timeline`, `visualize_effects`, `preview_frame`, `preview_contact_sheet`, `preview_waveform`, `preview_effect_comparison` |
-| Interchange/output | `project_export_otio`, `project_export_kdenlive`, `project_verify_kdenlive`, `project_render` |
+| Interchange/output | `project_export_otio`, `project_export_kdenlive`, `project_verify_kdenlive`, `project_open_kdenlive`, `project_render` |
 | Discovery | `doctor`, `media_inspect` |
 
 Generated `.svg`, `.png`, `.jpg`, and `.webp` results up to 5 MB are embedded directly in MCP tool responses, so a compatible client can inspect them without a second file-read tool.

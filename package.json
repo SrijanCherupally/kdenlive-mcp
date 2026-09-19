@@ -1,6 +1,6 @@
 {
   "name": "kdenlive-mcp",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Transactional Kdenlive companion CLI and local MCP server",
   "type": "module",
   "private": true,

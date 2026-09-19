@@ -117,8 +117,8 @@ export async function doctor({ kdenlivePath, meltPath, ffmpegPath, ffprobePath, 
   const [kdenlive, melt, ffmpeg, ffprobe] = await Promise.all([
     versionOf(resolved.kdenlive),
     versionOf(resolved.melt),
-    versionOf(resolved.ffmpeg),
-    versionOf(resolved.ffprobe),
+    versionOf(resolved.ffmpeg, ["-version"]),
+    versionOf(resolved.ffprobe, ["-version"]),
   ]);
   let source = null;
   if (sourcePath) {
@@ -214,11 +214,64 @@ export async function createContactSheet({ source, outputPath, columns = 4, rows
   return { outputPath: absoluteOutput, columns, rows, sampledDuration: duration };
 }
 
-export async function verifyKdenliveProject({ projectPath, kdenlivePath } = {}) {
+export async function verifyKdenliveProject({ projectPath, kdenlivePath, meltPath } = {}) {
+  if (!projectPath) throw new ProjectError("projectPath is required", "INVALID_ARGUMENT");
+  const absoluteProject = path.resolve(projectPath);
+  try {
+    await access(absoluteProject, constants.R_OK);
+  } catch {
+    throw new ProjectError(`Kdenlive project not found: ${absoluteProject}`, "PROJECT_NOT_FOUND");
+  }
+
+  // Kdenlive added --verify-file after the 26.08 release. MLT can validate
+  // the same XML on every supported release without starting the GUI.
+  const adjacentMelt = kdenlivePath ? path.join(path.dirname(path.resolve(kdenlivePath)), process.platform === "win32" ? "melt.exe" : "melt") : undefined;
+  const explicitMelt = meltPath ?? ((await isExecutable(adjacentMelt)) ? adjacentMelt : undefined);
+  const executable = await findExecutable("melt", explicitMelt);
+  if (!executable) throw new ProjectError("MLT melt was not found; install Kdenlive/MLT or set KDENLIVE_MCP_MELT_PATH", "TOOL_NOT_FOUND");
+  const result = await runProcess(executable, [
+    absoluteProject,
+    "in=0",
+    "out=0",
+    "-consumer", "null",
+    "real_time=-1",
+    "-silent",
+  ], { timeoutMs: 60_000 });
+  const warnings = result.stderr
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  return {
+    valid: result.code === 0,
+    engine: "melt",
+    mediaAvailable: !warnings.some((line) => /failed to load producer|invalid resource|failed to open/i.test(line)),
+    warnings,
+    ...result,
+  };
+}
+
+export async function openKdenliveProject({ projectPath, kdenlivePath } = {}) {
+  if (!projectPath) throw new ProjectError("projectPath is required", "INVALID_ARGUMENT");
+  const absoluteProject = path.resolve(projectPath);
+  try {
+    await access(absoluteProject, constants.R_OK);
+  } catch {
+    throw new ProjectError(`Kdenlive project not found: ${absoluteProject}`, "PROJECT_NOT_FOUND");
+  }
   const executable = await findExecutable("kdenlive", kdenlivePath);
   if (!executable) throw new ProjectError("Kdenlive was not found; install it or set KDENLIVE_MCP_KDENLIVE_PATH", "TOOL_NOT_FOUND");
-  const result = await runProcess(executable, ["--verify-file", path.resolve(projectPath)], { timeoutMs: 60_000 });
-  return { valid: result.code === 0, ...result };
+  return new Promise((resolve, reject) => {
+    const child = spawn(executable, [absoluteProject], {
+      detached: true,
+      stdio: "ignore",
+      windowsHide: false,
+    });
+    child.once("error", (error) => reject(new ProjectError(`Unable to open Kdenlive: ${error.message}`, "PROCESS_START_FAILED")));
+    child.once("spawn", () => {
+      child.unref();
+      resolve({ opened: true, projectPath: absoluteProject, executable, pid: child.pid });
+    });
+  });
 }
 
 export async function renderKdenliveProject({ projectPath, outputPath, preset = "MP4-H264/AAC", async = false, kdenlivePath } = {}) {
@@ -234,4 +287,3 @@ export async function renderKdenliveProject({ projectPath, outputPath, preset = 
   if (result.code !== 0) throw new ProjectError(`Kdenlive render failed: ${result.stderr.trim()}`, "PROCESS_FAILED", result);
   return { outputPath: absoluteOutput, preset, async, ...result };
 }
-

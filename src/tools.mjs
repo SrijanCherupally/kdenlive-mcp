@@ -32,6 +32,7 @@ import {
   createWaveform,
   doctor,
   inspectMedia,
+  openKdenliveProject,
   previewFrame,
   renderKdenliveProject,
   verifyKdenliveProject,
@@ -311,10 +312,15 @@ export const TOOL_DEFINITIONS = [
     tileWidth: number("Tile width.", 1),
     ffmpegPath: string("Optional explicit ffmpeg path."),
   }, ["source", "outputPath"]), localWrite),
-  tool("project_verify_kdenlive", "Ask the installed Kdenlive binary to verify a .kdenlive file.", objectSchema({
+  tool("project_verify_kdenlive", "Validate a .kdenlive file with the installed MLT engine, including compatibility with Kdenlive 26.08.", objectSchema({
+    projectPath: string("Path to the .kdenlive project."),
+    kdenlivePath: string("Optional Kdenlive path used to locate its adjacent melt executable."),
+    meltPath: string("Optional explicit melt executable path."),
+  }, ["projectPath"]), readOnly),
+  tool("project_open_kdenlive", "Open a .kdenlive project in the installed Kdenlive desktop application.", objectSchema({
     projectPath: string("Path to the .kdenlive project."),
     kdenlivePath: string("Optional explicit Kdenlive executable path."),
-  }, ["projectPath"]), readOnly),
+  }, ["projectPath"]), localWrite),
   tool("project_render", "Run a potentially expensive final Kdenlive render. The client should request approval before calling this tool.", objectSchema({
     projectPath: string("Path to the .kdenlive project."),
     outputPath: string("Destination rendered media path."),
@@ -436,6 +442,8 @@ export async function callTool(name, args = {}) {
       return createContactSheet(args);
     case "project_verify_kdenlive":
       return verifyKdenliveProject(args);
+    case "project_open_kdenlive":
+      return openKdenliveProject(args);
     case "project_render":
       return renderKdenliveProject(args);
     default:
